@@ -1,0 +1,11 @@
+Apache License
+Version 2.0, January 2004
+http://www.apache.org/licenses/
+
+These files are derivative compatibility patches for DGL
+(https://github.com/dmlc/dgl), which is licensed under the Apache License 2.0.
+
+The full license text is available at:
+
+https://www.apache.org/licenses/LICENSE-2.0
+

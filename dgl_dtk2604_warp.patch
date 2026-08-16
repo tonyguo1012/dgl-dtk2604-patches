@@ -1,0 +1,32 @@
+diff --git a/include/dgl/hip/hip_extensions/amd_warp_primitives.h b/include/dgl/hip/hip_extensions/amd_warp_primitives.h
+index 651dc543..f60895c8 100644
+--- a/include/dgl/hip/hip_extensions/amd_warp_primitives.h
++++ b/include/dgl/hip/hip_extensions/amd_warp_primitives.h
+@@ -53,8 +53,9 @@ __device__ inline int __thread_rank(lane_mask mask) {
+   (void)mask;
+ #endif
+ 
+-  return cooperative_groups::internal::coalesced_group::masked_bit_count(
+-      mask, 0);
++  // DTK 26.04 no longer exposes cooperative_groups::internal.  The rank is
++  // the population count of participating lanes below the calling lane.
++  return __popcll(mask & ((1LLU << __lane_id()) - 1));
+ }
+ 
+ __device__ inline unsigned int __mask_size(lane_mask mask) {
+@@ -83,15 +84,6 @@ __device__ inline void __sync_active_threads() {
+   __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "wavefront");
+ }
+ 
+-#if HIP_VERSION_MAJOR < 7 
+-__device__ inline void __syncwarp() {
+-  /* sync/barrier all threads in a warp */
+-  __builtin_amdgcn_fence(__ATOMIC_RELEASE, "wavefront");
+-  __builtin_amdgcn_wave_barrier();
+-  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "wavefront");
+-}
+-#endif
+-
+ __device__ inline int __all_sync(lane_mask mask, int predicate) {
+   /* calling thread must be set in the mask */
+ #ifndef WARP_NO_MASK_CHECK

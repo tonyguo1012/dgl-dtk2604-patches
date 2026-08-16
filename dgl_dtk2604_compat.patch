@@ -1,0 +1,124 @@
+--- a/src/array/cuda/atomic.cuh
++++ b/src/array/cuda/atomic.cuh
+@@ -201,7 +201,11 @@
+     return Cast<dtype>::Decode(old);                               \
+   }
+ 
++#if defined(__HIPCC__)
++#define OP(a, b) ((a) > (b) ? (a) : (b))
++#else
+ #define OP(a, b) max(a, b)
++#endif
+ DEFINE_ATOMIC(Max)
+ DEFINE_ATOMIC_16BIT(Max, half)
+ #if BF16_ENABLED
+@@ -209,7 +213,11 @@
+ #endif  // BF16_ENABLED
+ #undef OP
+ 
++#if defined(__HIPCC__)
++#define OP(a, b) ((a) < (b) ? (a) : (b))
++#else
+ #define OP(a, b) min(a, b)
++#endif
+ DEFINE_ATOMIC(Min)
+ DEFINE_ATOMIC_16BIT(Min, half)
+ #if BF16_ENABLED
+@@ -330,15 +338,17 @@
+ __device__ __forceinline__ half AtomicAdd<half>(half* addr, half val) {
+ // make sure we have half support
+ #if defined(__HIPCC__)
+-  __half2* addr_h2 = (__half2*)((size_t)addr & ~(size_t)2);
+-  bool isUpper = ((size_t)addr & (size_t)2);
+-  __half2 val_h2 =
+-      (isUpper) ? __half2(val, (__half)0.0) : __half2((__half)0.0, val);
+-  __half2 res = unsafeAtomicAdd(addr_h2, val_h2);
+-  if (isUpper)
+-    return __high2half(res);
+-  else
+-    return __low2half(res);
++  typedef uint16_t CT;
++  CT* addr_as_ui = reinterpret_cast<CT*>(addr);
++  CT old = *addr_as_ui;
++  CT assumed = old;
++  do {
++    assumed = old;
++    old = atomicCASshort(
++        addr_as_ui, assumed,
++        Cast<half>::Encode(Cast<half>::Decode(old) + val));
++  } while (assumed != old);
++  return Cast<half>::Decode(old);
+ #elif __CUDA_ARCH__ >= 700
+   return atomicAdd(addr, val);
+ #else
+@@ -365,16 +375,18 @@
+ AtomicAdd<__nv_bfloat16>(__nv_bfloat16* addr, __nv_bfloat16 val) {
+ #endif
+ #if defined(__HIPCC__)
+-  __hip_bfloat162* addr_h2 = (__hip_bfloat162*)((size_t)addr & ~(size_t)2);
+-  bool isUpper = ((size_t)addr & (size_t)2);
+-  __hip_bfloat162 val_h2 = (isUpper)
+-                               ? __hip_bfloat162(val, (__hip_bfloat16)0.0)
+-                               : __hip_bfloat162((__hip_bfloat16)0.0, val);
+-  __hip_bfloat162 res = unsafeAtomicAdd(addr_h2, val_h2);
+-  if (isUpper)
+-    return __high2bfloat16(res);
+-  else
+-    return __low2bfloat16(res);
++  typedef uint16_t CT;
++  CT* addr_as_ui = reinterpret_cast<CT*>(addr);
++  CT old = *addr_as_ui;
++  CT assumed = old;
++  do {
++    assumed = old;
++    old = atomicCASshort(
++        addr_as_ui, assumed,
++        Cast<__hip_bfloat16>::Encode(
++            Cast<__hip_bfloat16>::Decode(old) + val));
++  } while (assumed != old);
++  return Cast<__hip_bfloat16>::Decode(old);
+ // make sure we have bfloat16 support
+ #elif (defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800)
+   return atomicAdd(addr, val);
+--- a/src/array/cuda/csr2coo.cu
++++ b/src/array/cuda/csr2coo.cu
+@@ -78,6 +78,17 @@
+   }
+ };
+ 
++template <typename IdType>
++__global__ void CSRToCOORowKernel(
++    const IdType* indptr, IdType* rows, int64_t num_rows) {
++  int64_t row = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
++  if (row < num_rows) {
++    for (IdType edge = indptr[row]; edge < indptr[row + 1]; ++edge) {
++      rows[edge] = static_cast<IdType>(row);
++    }
++  }
++}
++
+ template <>
+ COOMatrix CSRToCOO<kDGLCUDA, int64_t>(CSRMatrix csr) {
+   const auto& ctx = csr.indptr->ctx;
+@@ -87,6 +98,13 @@
+   const auto nbits = csr.indptr->dtype.bits;
+   IdArray ret_row = NewIdArray(nnz, ctx, nbits);
+ 
++#if defined(__HIPCC__)
++  const int nt = cuda::FindNumThreads(csr.num_rows);
++  const int nb = (csr.num_rows + nt - 1) / nt;
++  CUDA_KERNEL_CALL(
++      CSRToCOORowKernel<int64_t>, nb, nt, 0, stream,
++      csr.indptr.Ptr<int64_t>(), ret_row.Ptr<int64_t>(), csr.num_rows);
++#else
+   runtime::CUDAWorkspaceAllocator allocator(csr.indptr->ctx);
+   thrust::counting_iterator<int64_t> iota(0);
+ 
+@@ -112,6 +130,7 @@
+         buffer_sizes + i, std::min(csr.num_rows - i, max_copy_at_once),
+         stream));
+   }
++#endif
+ 
+   return COOMatrix(
+       csr.num_rows, csr.num_cols, ret_row, csr.indices, csr.data, true,
